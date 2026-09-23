@@ -68,6 +68,18 @@ PURE = {"urlparse", "getattr", "setattr", "hasattr", "delattr", "isinstance", "i
         "fullmatch", "findall", "sub", "loads", "dumps", "fromisoformat", "strftime", "strptime",
         "group", "groups", "encode", "decode", "hex", "compile", "next", "iter", "enumerate", "zip"}
 
+# Authentication and authorization predicates are allowed to answer "no" when they fail, because
+# denying on error is FAIL CLOSED and is the correct answer. Measured 23 Sep: agno's
+# `verify_token` returns None when validation raises, which rejects an unverifiable token - exactly
+# what it should do. Flagging that would tell a maintainer to make their auth fail OPEN.
+# Only functions whose answer GATES ACCESS. Denying on error is safe there. A function that merely
+# REPORTS STATUS to a human is the opposite case: `is_authenticated` returning False on a timeout is
+# what told an owner to sign in again while he already was. Measured 23 Sep - the first version of
+# this exemption matched "auth" and silenced that exact bug in the corpus.
+FAIL_CLOSED_OK = re.compile(r"(^|_)(verify|authorize|authorise|permit|deny)(_|$)|"
+                            r"permission|permitted|is_allowed|has_access|can_[a-z]|"
+                            r"validate_token|check_token|verify_signature", re.I)
+
 PREDICATE = re.compile(r"^(is|has|can|should|was|did|are|check|verify|validate|ensure|test|supports?|"
                        r"allows?|exists?|contains?|matches?|needs?|requires?|logged|authenticated)_|"
                        r"_(ok|valid|exists|enabled|allowed|ready|authenticated|supported)$|"
@@ -215,6 +227,8 @@ class Auditor(ast.NodeVisitor):
                     sentinel = v is None or (isinstance(v, ast.Constant) and v.value is None)
                     definite = isinstance(v, ast.Constant) and v.value in (False, 0, "")
                     fname = self.fnstack[-1].name if self.fnstack else ""
+                    if FAIL_CLOSED_OK.search(fname):
+                        break                      # denying on error is the right answer here
                     is_claim = bool(PREDICATE.search(fname))
                     # External reach is what makes a falsy answer a lie. And a handler that LOGS is
                     # recoverable: someone can see why. Both conditions, or it is not reported.

@@ -69,3 +69,12 @@ def has_permission(user, action, acl):
         return acl.check(user, action)
     except Exception:
         return False
+
+
+async def verify_token(validator, token, audience):
+    """Fail closed over the network. A token that cannot be validated is rejected, which is the
+    correct answer - flagging this would push a maintainer toward failing open."""
+    try:
+        return validator.validate_token(token, audience)
+    except Exception:
+        return None
