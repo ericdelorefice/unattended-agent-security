@@ -41,6 +41,20 @@ controls the teardown argues for:
 python3 agent-guardrails/test_guardrails.py    # 17 tests, each named for the failure it prevents
 ```
 
+**[detector/](detector/)** — `agentaudit`, a dependency-free static analyser for the failure shapes in
+the teardown: a check that answers "no" when it could not check, a completion marker written whether or
+not the work completed, and an absolute threshold on a resource the platform sizes on demand.
+
+```
+python3 detector/test_agentaudit.py    # recall and precision, against fixtures of real failures
+```
+
+[**From 453 findings to 1**](detector/from-453-findings-to-1.md) is the write-up of making it precise
+enough to hand someone. Pointed at three mature agent frameworks the first version produced 453, 341
+and 29 findings, and every one sampled was a legitimate idiom. Four changes took those to 0, 1 and 0,
+and the survivor is a real bug: a Couchbase check that reports a timeout as "this bucket does not
+exist. Please create it."
+
 **[The checklist](checklist/agent-deployment-checklist.md)** — one page, derived from the other two.
 Every item cites the case that produced it. Written to be run through before an agent goes unattended,
 not after.
