@@ -36,3 +36,18 @@ def _check_bucket_exists(cluster, name):
         return True
     except Exception:
         return False
+
+
+class Store:
+    def exists(self):
+        # Reaches the cluster. A timeout answers "no".
+        try:
+            return self.client.get_collection(self.name) is not None
+        except Exception:
+            return False
+
+    def recreate(self):
+        # Real, found in agno 23 Sep 2026: a failed read leads to a drop.
+        if not self.exists():
+            self.client.drop_collection(self.name)
+            self.client.create_collection(self.name)

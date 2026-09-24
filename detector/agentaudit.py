@@ -44,6 +44,11 @@ CAPABILITIES = {
     "db_write":   (["execute", "executemany", "commit", "cursor"],
                    "writes to a database"),
 }
+# Calls that destroy or overwrite something. Deliberately narrow: a false positive here is
+# expensive because the finding it produces is alarming.
+DESTRUCTIVE = re.compile(r"^(drop_\w+|delete_\w+|remove_\w+|rmtree|unlink|truncate|"
+                         r"destroy|purge|wipe|drop|delete|remove|recreate|overwrite)$", re.I)
+
 WRITE_MODES = re.compile(r"^[rbt]*[wax]")
 CRED_PAT = re.compile(r"(secret|token|api[_-]?key|password|passwd|credential|\.pem|\.key|auth|"
                       r"\.env|id_rsa|private[_-]?key)", re.I)
@@ -76,9 +81,20 @@ PURE = {"urlparse", "getattr", "setattr", "hasattr", "delattr", "isinstance", "i
 # REPORTS STATUS to a human is the opposite case: `is_authenticated` returning False on a timeout is
 # what told an owner to sign in again while he already was. Measured 23 Sep - the first version of
 # this exemption matched "auth" and silenced that exact bug in the corpus.
+# Predicates whose "no" WITHHOLDS something. Denying on error is safe there, so they are not
+# reported. Contrast with a predicate whose "no" CAUSES an action - a delete, a create, an
+# instruction to re-authenticate - which is the bug this tool exists for.
+#
+# This list has been patched three times (auth gates, then entitlement checks) and each patch was
+# driven by a false positive found by reading real code. That is the honest limit of a name-based
+# heuristic: the signal is in what the CALLER does with the answer, not in the callee's name.
+# Closing that gap properly needs interprocedural analysis. Until then this list will keep growing,
+# and every addition should come from a false positive that was actually read, never from a guess.
 FAIL_CLOSED_OK = re.compile(r"(^|_)(verify|authorize|authorise|permit|deny)(_|$)|"
                             r"permission|permitted|is_allowed|has_access|can_[a-z]|"
-                            r"validate_token|check_token|verify_signature", re.I)
+                            r"validate_token|check_token|verify_signature|"
+                            r"is_premium|is_licen[cs]ed|is_enterprise|has_licen[cs]e|entitled",
+                            re.I)
 
 PREDICATE = re.compile(r"^(is|has|can|should|was|did|are|check|verify|validate|ensure|test|supports?|"
                        r"allows?|exists?|contains?|matches?|needs?|requires?|logged|authenticated)_|"
@@ -263,6 +279,66 @@ class Auditor(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def _fallible_predicates(self, tree):
+        """Methods whose answer can be wrong because they swallow an exception.
+
+        Built 23 Sep 2026. Three of the four real findings in this project shared one shape that no
+        detector here looked for: a check that reaches an external system, answers "no" when it
+        fails, and a caller that DESTROYS something on that answer. agno's `exists()` returns False
+        on a cluster timeout; `Knowledge.__post_init__` then calls `create()`; and with
+        `overwrite=True` that drops the collection. A transient read failure deletes data.
+
+        Found by hand three times before it was worth automating. This finds it.
+        """
+        bad = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for t in ast.walk(node):
+                if not isinstance(t, ast.Try):
+                    continue
+                for h in t.handlers:
+                    broad = h.type is None or (isinstance(h.type, ast.Name)
+                                               and h.type.id in ("Exception", "BaseException"))
+                    if not broad:
+                        continue
+                    for n in h.body:
+                        if isinstance(n, ast.Return):
+                            v = n.value
+                            if v is None or (isinstance(v, ast.Constant) and v.value in (False, None, 0)):
+                                bad.add(node.name)
+        return bad
+
+    def destructive_on_fallible(self, tree):
+        """A destroy inside a branch whose condition is a predicate that can answer wrongly."""
+        fallible = self._fallible_predicates(tree)
+        if not fallible:
+            return
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            # `if not thing.check()` / `if thing.check() is False`
+            test = node.test
+            called = None
+            if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+                inner = test.operand
+                if isinstance(inner, ast.Call):
+                    called = dotted(inner.func).rsplit(".", 1)[-1]
+            elif isinstance(test, ast.Compare) and isinstance(test.left, ast.Call):
+                called = dotted(test.left.func).rsplit(".", 1)[-1]
+            if called not in fallible:
+                continue
+            for n in ast.walk(node):
+                if isinstance(n, ast.Call):
+                    tail = dotted(n.func).rsplit(".", 1)[-1]
+                    if DESTRUCTIVE.match(tail):
+                        self.add("destroy_on_fallible_check", 4, self.rel, n.lineno,
+                                 f"`{tail}()` runs when `{called}()` answers no, and `{called}()` "
+                                 f"swallows exceptions to return a falsy value. A failed check - a "
+                                 f"timeout, an auth failure - then destroys something that was there.",
+                                 "likely")
+                        return
+
     def _stamp_check(self, fn):
         """[1] A liveness stamp written unconditionally: the monitor then reports a dead job as healthy."""
         has_try = any(isinstance(n, ast.Try) for n in fn.body)
@@ -323,6 +399,7 @@ def audit(root):
         files += 1
         a = Auditor(full, rel, src.splitlines())
         a.visit(tree)
+        a.destructive_on_fallible(tree)
         findings += a.findings
         for k, v in a.caps.items():
             caps[k] += v
@@ -331,7 +408,7 @@ def audit(root):
 
 SHOW_ALL = False
 
-ORDER = ["could_not_check_is_no", "unconditional_stamp", "absolute_threshold",
+ORDER = ["destroy_on_fallible_check", "could_not_check_is_no", "unconditional_stamp", "absolute_threshold",
          "silent_swallow", "unescape_order"]
 
 

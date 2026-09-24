@@ -78,3 +78,12 @@ async def verify_token(validator, token, audience):
         return validator.validate_token(token, audience)
     except Exception:
         return None
+
+
+def is_premium(license_str, verifier):
+    """Withholds a paid feature on error rather than granting one. Fail closed, and correct -
+    found in litellm 23 Sep 2026 and wrongly flagged before this fixture existed."""
+    try:
+        return verifier.verify(license_str) is True
+    except Exception:
+        return False

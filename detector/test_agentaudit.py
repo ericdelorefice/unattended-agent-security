@@ -31,7 +31,7 @@ def main():
     good_n, good_out = count("known_good.py")
 
     # Recall: every known failure must still be found.
-    EXPECTED_BAD = 3
+    EXPECTED_BAD = 4
     recall_ok = bad_n >= EXPECTED_BAD
     # Precision: not one legitimate idiom may be reported.
     precision_ok = good_n == 0
